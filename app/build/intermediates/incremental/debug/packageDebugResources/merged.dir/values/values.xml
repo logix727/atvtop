@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="accessibility_service_description">Automates pressing the Force Stop button in system App Info settings when you choose to force-stop a background app without ADB shell access.</string>
-    <string name="app_name">TV Control Center</string>
-    <style name="Theme.TvControl" parent="android:Theme.Material.NoActionBar"/>
-</resources>
