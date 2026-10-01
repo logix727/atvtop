@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Automates clicking Force Stop in Android TV App Settings and auto-accepting local ADB debugging for ATV Task Manager v1.1.</string>
+    <string name="app_name">ATV Task Manager v1.1</string>
+    <style name="Theme.TvControl" parent="android:Theme.Material.NoActionBar"/>
+</resources>

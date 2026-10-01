@@ -1,0 +1,2 @@
+-keep class com.atvpm.tvcontrol.MainActivity { *; }
+-keep class com.atvpm.tvcontrol.service.ForceStopAccessibilityService { *; }

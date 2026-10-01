@@ -1,0 +1,8 @@
+-keep class j$.time.Duration {
+  public static j$.time.Duration ofMillis(long);
+  public long toMillis();
+}
+-keep class j$.time.TimeConversions {
+  public static java.time.Duration convert(j$.time.Duration);
+  public static j$.time.Duration convert(java.time.Duration);
+}

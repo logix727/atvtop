@@ -1,0 +1,10 @@
+[
+    {
+        "merged": "com.atvpm.tvcontrol.app-debug-46:/xml_accessibility_service_config.xml.flat",
+        "source": "com.atvpm.tvcontrol.app-main-48:/xml/accessibility_service_config.xml"
+    },
+    {
+        "merged": "com.atvpm.tvcontrol.app-debug-46:/drawable_tv_banner.xml.flat",
+        "source": "com.atvpm.tvcontrol.app-main-48:/drawable/tv_banner.xml"
+    }
+]
