@@ -158,15 +158,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "Killed background apps"
                 }
                 "reload-launcher" -> {
-                    executeReboot(RebootMode.RELOAD_LAUNCHER)
+                    executeReboot(RebootMode.RELOAD_HOME_UI)
                     "Reloaded launcher"
                 }
                 "restart" -> {
-                    executeReboot(RebootMode.STANDARD_REBOOT)
+                    executeReboot(RebootMode.STANDARD_RESTART)
                     "Rebooting TV..."
                 }
                 "sleep" -> {
-                    executeReboot(RebootMode.GO_TO_SLEEP)
+                    executeReboot(RebootMode.SLEEP_STANDBY)
                     "Standby triggered"
                 }
                 else -> "Action executed"
@@ -174,8 +174,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         },
         getSystemStatusJson = {
             val mem = _memory.value
-            val free = mem?.availableRamMb ?: 0
-            val total = mem?.totalRamMb ?: 0
+            val free = (mem?.availableKb ?: 0L) / 1024L
+            val total = (mem?.totalKb ?: 0L) / 1024L
             """{"freeRamMb":$free,"totalRamMb":$total,"device":"${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}","androidVersion":"${android.os.Build.VERSION.RELEASE}"}"""
         },
     )

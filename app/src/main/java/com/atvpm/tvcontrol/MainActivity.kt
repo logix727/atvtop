@@ -69,6 +69,7 @@ import com.atvpm.tvcontrol.ui.AppManagerTab
 import com.atvpm.tvcontrol.ui.AppManagerUiState
 import com.atvpm.tvcontrol.ui.MainScreenTab
 import com.atvpm.tvcontrol.ui.MainViewModel
+import com.atvpm.tvcontrol.ui.PhoneCompanionScreen
 import com.atvpm.tvcontrol.ui.RunningAppsUiState
 import com.atvpm.tvcontrol.ui.components.AppIconBox
 import com.atvpm.tvcontrol.ui.components.StatusPill
@@ -166,6 +167,9 @@ private fun MainTaskManagerScreen(
     var openRebootDrawer by remember { mutableStateOf<RebootCategory?>(null) }
     var expandedPackages by remember { mutableStateOf(setOf<String>()) }
 
+    val companionUrl by viewModel.companionUrl.collectAsState()
+    val qrBitmap by viewModel.qrBitmap.collectAsState()
+
     BackHandler {
         if (openRebootDrawer != null) {
             openRebootDrawer = null
@@ -221,40 +225,60 @@ private fun MainTaskManagerScreen(
             )
         }
 
-        if (activeScreenTab == MainScreenTab.APP_MANAGER) {
-            // Screen 2: Install / Remove Apps (User + System App Uninstaller, Batch Disable/Restore & Local APK Installer)
-            AppUninstallerAndInstallerScreen(
-                adbState = adbState,
-                state = appMgrState,
-                onSelectTab = { viewModel.setAppManagerTab(it) },
-                onToggleSortOrder = { viewModel.toggleAppManagerSortOrder() },
-                onToggleSelect = { viewModel.toggleAppManagerSelect(it) },
-                onSelectAll = { viewModel.selectAllAppManagerVisible() },
-                onClearSelection = { viewModel.clearAppManagerSelection() },
-                onBatchUninstall = { viewModel.batchUninstallManagedApps() },
-                onBatchDisable = { viewModel.batchDisableManagedApps() },
-                onBatchRestore = { viewModel.batchRestoreManagedApps() },
-                onOpenApp = { app -> viewModel.openApp(app.packageName, app.label) },
-                onUninstallSingle = { viewModel.uninstallSingleManagedApp(it) },
-                onDisableSingle = { viewModel.disableSingleManagedApp(it) },
-                onRestoreSingle = { viewModel.restoreOrEnableSingleManagedApp(it) },
-                onInstallApk = { viewModel.installApkFile(it) },
-                onDeleteApk = { viewModel.deleteApkFile(it) },
-                onRefresh = { viewModel.refreshAppManager() },
-                modifier = Modifier.weight(1f),
-            )
-        } else {
-            // Screen 1: Task Manager (RAM Telemetry + Live Rolling Graph + 1-Click Kill All + Running Apps & Expandable PIDs)
-            RamTelemetryAndActionsCard(
-                uiState = uiState,
-                onKillAll = { viewModel.killAllRunningApps() },
-                onKillAllAndExit = { viewModel.killAllAndExit(onCloseApp) },
-                onClearCache = { viewModel.clearAllCaches() },
-                onKillSelected = { viewModel.killSelectedApps() },
-                onSelectAll = { viewModel.selectAllVisible() },
-                onClearSelection = { viewModel.clearSelection() },
-                onRefresh = { viewModel.refreshRunningApps() },
-            )
+        when (activeScreenTab) {
+            MainScreenTab.PHONE_COMPANION -> {
+                PhoneCompanionScreen(
+                    companionUrl = companionUrl,
+                    qrBitmap = qrBitmap,
+                    onRefreshBridge = { viewModel.ensureCompanionRunning() },
+                    onKillAll = { viewModel.killAllRunningApps() },
+                    onReloadLauncher = { viewModel.executeReboot(RebootMode.RELOAD_HOME_UI) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            MainScreenTab.SMART_DEBLOATER, MainScreenTab.APK_FILES, MainScreenTab.APP_MANAGER -> {
+                // Screen 2: Install / Remove Apps (User + System App Uninstaller, Batch Disable/Restore & Local APK Installer)
+                AppUninstallerAndInstallerScreen(
+                    adbState = adbState,
+                    state = appMgrState,
+                    onSelectTab = { viewModel.setAppManagerTab(it) },
+                    onToggleSortOrder = { viewModel.toggleAppManagerSortOrder() },
+                    onToggleSelect = { viewModel.toggleAppManagerSelect(it) },
+                    onSelectAll = { viewModel.selectAllAppManagerVisible() },
+                    onClearSelection = { viewModel.clearAppManagerSelection() },
+                    onBatchUninstall = { viewModel.batchUninstallManagedApps() },
+                    onBatchDisable = { viewModel.batchDisableManagedApps() },
+                    onBatchRestore = { viewModel.batchRestoreManagedApps() },
+                    onOpenApp = { app -> viewModel.openApp(app.packageName, app.label) },
+                    onUninstallSingle = { viewModel.uninstallSingleManagedApp(it) },
+                    onDisableSingle = { viewModel.disableSingleManagedApp(it) },
+                    onRestoreSingle = { viewModel.restoreOrEnableSingleManagedApp(it) },
+                    onInstallApk = { viewModel.installApkFile(it) },
+                    onDeleteApk = { viewModel.deleteApkFile(it) },
+                    onRefresh = { viewModel.refreshAppManager() },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            MainScreenTab.POWER_MENU -> {
+                UnifiedPowerAndRebootPanel(
+                    adbConnected = adbState.connected,
+                    executingReboot = uiState.executingReboot,
+                    onSelectRebootMode = { viewModel.executeReboot(it) },
+                    onClose = { viewModel.setScreenTab(MainScreenTab.TASK_MANAGER) },
+                )
+            }
+            MainScreenTab.TASK_MANAGER -> {
+                // Screen 1: Task Manager (RAM Telemetry + Live Rolling Graph + 1-Click Kill All + Running Apps & Expandable PIDs)
+                RamTelemetryAndActionsCard(
+                    uiState = uiState,
+                    onKillAll = { viewModel.killAllRunningApps() },
+                    onKillAllAndExit = { viewModel.killAllAndExit(onCloseApp) },
+                    onClearCache = { viewModel.clearAllCaches() },
+                    onKillSelected = { viewModel.killSelectedApps() },
+                    onSelectAll = { viewModel.selectAllVisible() },
+                    onClearSelection = { viewModel.clearSelection() },
+                    onRefresh = { viewModel.refreshRunningApps() },
+                )
 
             Surface(
                 modifier = Modifier
@@ -394,6 +418,7 @@ private fun MainTaskManagerScreen(
         }
     }
 }
+}
 
 @Composable
 private fun TopHeaderBar(
@@ -453,26 +478,30 @@ private fun TopHeaderBar(
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    for (tab in MainScreenTab.entries) {
-                        val selected = activeScreenTab == tab
+                    val visibleTabs = listOf(
+                        MainScreenTab.TASK_MANAGER,
+                        MainScreenTab.SMART_DEBLOATER,
+                        MainScreenTab.APK_FILES,
+                        MainScreenTab.PHONE_COMPANION,
+                        MainScreenTab.POWER_MENU,
+                    )
+                    for (tab in visibleTabs) {
+                        val selected = activeScreenTab == tab || (tab == MainScreenTab.SMART_DEBLOATER && activeScreenTab == MainScreenTab.APP_MANAGER)
                         TvFocusableSurface(
                             onClick = { onSelectScreenTab(tab) },
                             selected = selected,
                             shape = RoundedCornerShape(6.dp),
                             containerColor = if (selected) Color(0xFF0E3A5A) else Color.Transparent,
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 4.dp),
                         ) { isFocused ->
                             Text(
-                                text = when (tab) {
-                                    MainScreenTab.TASK_MANAGER -> "⚡ Task Manager"
-                                    MainScreenTab.APP_MANAGER -> "📦 App Manager"
-                                },
+                                text = "${tab.icon} ${tab.label}",
                                 color = when {
                                     isFocused -> TvColors.FocusRing
                                     selected -> TvColors.TextPrimary
                                     else -> TvColors.TextSecondary
                                 },
-                                fontSize = 12.sp,
+                                fontSize = 11.5.sp,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                 softWrap = false,
                             )
@@ -1514,6 +1543,13 @@ private fun ManagedAppRowCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    if (app.oemBrand != null) {
+                        StatusPill(
+                            text = app.oemBrand.uppercase(),
+                            color = TvColors.FocusRing,
+                            backgroundColor = Color(0x222563EB),
+                        )
+                    }
                     when {
                         !app.isInstalledForUser -> StatusPill(
                             text = "REMOVED (USER 0)",
@@ -1525,10 +1561,20 @@ private fun ManagedAppRowCard(
                             color = TvColors.Danger,
                             backgroundColor = TvColors.DangerBg,
                         )
-                        app.isBloatware -> StatusPill(
+                        app.safetyLevel == DebloatSafetyLevel.SAFE && app.isBloatware -> StatusPill(
                             text = "SAFE TO DEBLOAT",
-                            color = TvColors.AccentGold,
-                            backgroundColor = TvColors.WarningBg,
+                            color = Color(0xFF10B981),
+                            backgroundColor = Color(0x2210B981),
+                        )
+                        app.safetyLevel == DebloatSafetyLevel.RECOMMENDED && app.isBloatware -> StatusPill(
+                            text = "RECOMMENDED",
+                            color = Color(0xFF3B82F6),
+                            backgroundColor = Color(0x223B82F6),
+                        )
+                        app.safetyLevel == DebloatSafetyLevel.ADVANCED && app.isBloatware -> StatusPill(
+                            text = "ADVANCED",
+                            color = Color(0xFFF59E0B),
+                            backgroundColor = Color(0x22F59E0B),
                         )
                         app.isCriticalProtected -> StatusPill(
                             text = "CORE OS (LOCKED)",
