@@ -214,7 +214,7 @@ class CompanionWebServer(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ATV Control • Web Bridge</title>
+  <title>ATV Top • Web Bridge</title>
   <style>
     :root {
       --bg: #090D16;
@@ -251,7 +251,7 @@ class CompanionWebServer(
   <header>
     <div class="badge">CONNECTED TO TV</div>
     <h1>$deviceName</h1>
-    <p class="sub">ATV Control Sideload & Remote Power Center</p>
+    <p class="sub">ATV Top Sideload & Remote Power Center</p>
   </header>
 
   <div class="card">

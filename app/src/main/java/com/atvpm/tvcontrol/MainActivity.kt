@@ -460,7 +460,7 @@ private fun TopHeaderBar(
                         fontSize = 14.sp,
                     )
                     Text(
-                        text = "ATV CONTROL",
+                        text = "ATV TOP",
                         color = TvColors.TextPrimary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Black,
