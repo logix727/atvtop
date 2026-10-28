@@ -23,6 +23,23 @@ data class AutomationOutcome(
 )
 
 object AccessibilityGate {
+    @Volatile
+    private var lastExternalIntentTimestampMs: Long = 0L
+
+    /**
+     * Marks that the app intentionally launched a child/system Activity (e.g. Settings,
+     * App Info, PackageInstaller, or Uninstaller) so `MainActivity.onUserLeaveHint()`
+     * does not mistake it for the user pressing the HOME button and kill the process.
+     */
+    fun markLaunchingExternalActivity() {
+        lastExternalIntentTimestampMs = System.currentTimeMillis()
+    }
+
+    fun isExternalActivityLaunchRecent(windowMs: Long = 8_000L): Boolean {
+        val elapsed = System.currentTimeMillis() - lastExternalIntentTimestampMs
+        return elapsed in 0..windowMs || ForceStopAccessibilityService.instance?.isBusy == true
+    }
+
     fun isEnabled(context: Context): Boolean = runCatching {
         val enabled = Settings.Secure.getInt(
             context.contentResolver,
@@ -59,6 +76,9 @@ class ForceStopAccessibilityService : AccessibilityService() {
 
     private val activeSession = AtomicReference<PendingSession?>(null)
     private val pendingPowerTarget = AtomicReference<String?>(null)
+
+    val isBusy: Boolean
+        get() = activeSession.get() != null || pendingPowerTarget.get() != null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -280,6 +300,7 @@ class ForceStopAccessibilityService : AccessibilityService() {
         activeSession.set(session)
 
         try {
+            AccessibilityGate.markLaunchingExternalActivity()
             val intent = Intent(
                 Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.fromParts("package", packageName, null),

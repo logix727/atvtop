@@ -525,6 +525,7 @@ class ProcessController(
     }
 
     fun openAppInfoScreen(packageName: String): Boolean = runCatching {
+        AccessibilityGate.markLaunchingExternalActivity()
         val intent = Intent(
             Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
             Uri.fromParts("package", packageName, null),

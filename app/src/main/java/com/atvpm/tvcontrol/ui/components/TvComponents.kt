@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.view.SoundEffectConstants
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -40,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -63,6 +65,7 @@ fun TvFocusableSurface(
     contentPadding: PaddingValues = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
     content: @Composable (isFocused: Boolean) -> Unit,
 ) {
+    val view = LocalView.current
     var isFocused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         targetValue = if (isFocused) focusScale else 1f,
@@ -89,12 +92,21 @@ fun TvFocusableSurface(
         modifier = modifier
             .scale(scale)
             .onFocusChanged { state ->
+                if (state.isFocused && !isFocused) {
+                    view.playSoundEffect(SoundEffectConstants.CLICK)
+                }
                 isFocused = state.isFocused
                 if (state.isFocused) onFocused?.invoke()
             }
             .clip(shape)
             .focusable()
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(
+                enabled = enabled,
+                onClick = {
+                    view.playSoundEffect(SoundEffectConstants.CLICK)
+                    onClick()
+                },
+            )
             .alpha(if (enabled) 1f else 0.52f),
         shape = shape,
         color = bg,

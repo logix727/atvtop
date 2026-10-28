@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import com.atvpm.tvcontrol.service.AccessibilityGate
 import com.atvpm.tvcontrol.service.ForceStopAccessibilityService
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -56,6 +57,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.atvpm.tvcontrol.core.AdbConnectionState
+import com.atvpm.tvcontrol.domain.DebloatSafetyLevel
 import com.atvpm.tvcontrol.domain.LocalApkFileEntry
 import com.atvpm.tvcontrol.domain.ManagedAppEntry
 import com.atvpm.tvcontrol.domain.RebootCategory
@@ -111,7 +113,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // User pressed HOME or switched away — close immediately and free 100% of memory
+        // Ignore when launching a child Settings / Uninstaller / PackageInstaller / Accessibility intent
+        if (AccessibilityGate.isExternalActivityLaunchRecent()) {
+            viewModel.onHostStopped()
+            return
+        }
+        // User pressed HOME — close and free memory without revoking Accessibility service
         closeAndFreeApp()
     }
 
@@ -126,23 +133,23 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         viewModel.onHostStopped()
         super.onDestroy()
-        Process.killProcess(Process.myPid())
+        if (!AccessibilityGate.isRunning()) {
+            Process.killProcess(Process.myPid())
+        }
     }
 
     /**
-     * Completely closes the activity, removes it from Recents, closes any open ADB socket,
-     * disables the accessibility service so Android OS doesn't restart the process,
-     * and terminates this app's Linux process so it uses 0 MB RAM in the background.
+     * Closes the activity, stops background polling, removes it from Recents,
+     * and frees memory while preserving the user's Accessibility Service authorization.
      */
     private fun closeAndFreeApp() {
         viewModel.onHostStopped()
-        runCatching {
-            ForceStopAccessibilityService.instance?.disableSelf()
-        }
         finishAndRemoveTask()
-        window.decorView.postDelayed({
-            Process.killProcess(Process.myPid())
-        }, 80L)
+        if (!AccessibilityGate.isRunning()) {
+            window.decorView.postDelayed({
+                Process.killProcess(Process.myPid())
+            }, 80L)
+        }
     }
 }
 
@@ -220,6 +227,7 @@ private fun MainTaskManagerScreen(
                 adbState = adbState,
                 state = appMgrState,
                 onSelectTab = { viewModel.setAppManagerTab(it) },
+                onToggleSortOrder = { viewModel.toggleAppManagerSortOrder() },
                 onToggleSelect = { viewModel.toggleAppManagerSelect(it) },
                 onSelectAll = { viewModel.selectAllAppManagerVisible() },
                 onClearSelection = { viewModel.clearAppManagerSelection() },
@@ -624,7 +632,17 @@ private fun RamTelemetryAndActionsCard(
                 }
             }
 
-            // 2. Right: Focused Action Cluster (Hero Kill All + Clear Cache + Refresh)
+            // 1b. Center: Live Rolling RAM Sparkline Graph
+            if (uiState.ramHistory.size >= 2) {
+                LiveRamSparkline(
+                    history = uiState.ramHistory,
+                    modifier = Modifier
+                        .width(120.dp)
+                        .height(42.dp),
+                )
+            }
+
+            // 2. Right: Focused Action Cluster (Hero Kill All + Kill All & Exit + Clear Cache + Refresh)
             Row(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
@@ -661,6 +679,14 @@ private fun RamTelemetryAndActionsCard(
                             containerColor = TvColors.DangerBg,
                             modifier = Modifier.focusRequester(killAllFocusRequester),
                         )
+
+                        TvButton(
+                            text = "Kill All & Exit",
+                            onClick = onKillAllAndExit,
+                            enabled = !uiState.batchKilling,
+                            accentColor = TvColors.AccentGold,
+                            containerColor = TvColors.WarningBg,
+                        )
                     }
 
                     TvButton(
@@ -676,6 +702,76 @@ private fun RamTelemetryAndActionsCard(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun LiveRamSparkline(
+    history: List<Float>,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(TvColors.Background.copy(alpha = 0.8f))
+            .border(1.dp, TvColors.Divider, RoundedCornerShape(8.dp))
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val pts = history.takeLast(32)
+            if (pts.size < 2) return@Canvas
+            val w = size.width
+            val h = size.height
+            val stepX = w / (pts.size - 1).coerceAtLeast(1)
+
+            // Midline guide
+            drawLine(
+                color = TvColors.Divider.copy(alpha = 0.6f),
+                start = Offset(0f, h * 0.5f),
+                end = Offset(w, h * 0.5f),
+                strokeWidth = 1f,
+            )
+
+            val strokePath = Path()
+            val fillPath = Path()
+
+            pts.forEachIndexed { idx, frac ->
+                val x = idx * stepX
+                val clamped = frac.coerceIn(0.05f, 0.98f)
+                val y = h * (1f - clamped)
+                if (idx == 0) {
+                    strokePath.moveTo(x, y)
+                    fillPath.moveTo(x, h)
+                    fillPath.lineTo(x, y)
+                } else {
+                    strokePath.lineTo(x, y)
+                    fillPath.lineTo(x, y)
+                }
+                if (idx == pts.lastIndex) {
+                    fillPath.lineTo(x, h)
+                    fillPath.close()
+                }
+            }
+
+            val latest = pts.last()
+            val lineColor = when {
+                latest >= 0.85f -> TvColors.Danger
+                latest >= 0.70f -> TvColors.AccentGold
+                else -> TvColors.FocusRing
+            }
+
+            drawPath(
+                path = fillPath,
+                brush = Brush.verticalGradient(
+                    colors = listOf(lineColor.copy(alpha = 0.35f), Color.Transparent),
+                ),
+            )
+            drawPath(
+                path = strokePath,
+                color = lineColor,
+                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+            )
         }
     }
 }
@@ -1031,6 +1127,7 @@ private fun AppUninstallerAndInstallerScreen(
     adbState: AdbConnectionState,
     state: AppManagerUiState,
     onSelectTab: (AppManagerTab) -> Unit,
+    onToggleSortOrder: () -> Unit,
     onToggleSelect: (String) -> Unit,
     onSelectAll: () -> Unit,
     onClearSelection: () -> Unit,
@@ -1150,6 +1247,11 @@ private fun AppUninstallerAndInstallerScreen(
                                 )
                             }
                         }
+
+                        TvButton(
+                            text = "Sort: ${state.sortOrder.label}",
+                            onClick = onToggleSortOrder,
+                        )
                     }
 
                     TvButton(
@@ -1629,6 +1731,21 @@ private fun UnifiedPowerAndRebootPanel(
             RebootMode.RECOVERY,
         )
     }
+    var showAdvancedBootModes by remember { mutableStateOf(false) }
+    val advancedRow1 = remember {
+        listOf(
+            RebootMode.TV_POWER_MENU,
+            RebootMode.BOOTLOADER,
+            RebootMode.FASTBOOT,
+        )
+    }
+    val advancedRow2 = remember {
+        listOf(
+            RebootMode.USERSPACE,
+            RebootMode.SIDELOAD,
+            RebootMode.UPDATE,
+        )
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1665,10 +1782,20 @@ private fun UnifiedPowerAndRebootPanel(
                     )
                 }
 
-                TvButton(
-                    text = "Close ▲",
-                    onClick = onClose,
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TvButton(
+                        text = if (showAdvancedBootModes) "Hide Bootloader / Fastboot ▲" else "Advanced Boot Modes ▼",
+                        onClick = { showAdvancedBootModes = !showAdvancedBootModes },
+                        accentColor = TvColors.AccentGold,
+                    )
+                    TvButton(
+                        text = "Close ▲",
+                        onClick = onClose,
+                    )
+                }
             }
 
             // Row 1: Restart TV | Quick UI Restart | Reload Home Screen
@@ -1767,6 +1894,58 @@ private fun UnifiedPowerAndRebootPanel(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                        }
+                    }
+                }
+            }
+
+            if (showAdvancedBootModes) {
+                for (advRow in listOf(advancedRow1, advancedRow2)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        for (mode in advRow) {
+                            val isRunning = executingReboot == mode
+                            val canRun = mode.worksWithoutAdb || adbConnected
+
+                            TvFocusableSurface(
+                                onClick = { onSelectRebootMode(mode) },
+                                enabled = executingReboot == null && canRun,
+                                focusBorderColor = TvColors.AccentGold,
+                                containerColor = TvColors.Surface,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                                modifier = Modifier.weight(1f),
+                            ) { isFocused ->
+                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = if (isRunning) "Executing..." else mode.title,
+                                            color = if (isFocused) TvColors.AccentGold else TvColors.TextPrimary,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                        )
+                                        StatusPill(
+                                            text = if (mode.worksWithoutAdb) "NATIVE" else "ADB",
+                                            color = if (mode.worksWithoutAdb) TvColors.Success else TvColors.AccentGold,
+                                            backgroundColor = if (mode.worksWithoutAdb) TvColors.SuccessBg else TvColors.WarningBg,
+                                        )
+                                    }
+                                    Text(
+                                        text = mode.subtitle,
+                                        color = TvColors.TextSecondary,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

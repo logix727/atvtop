@@ -53,14 +53,15 @@ class AdbBackend(
 
     override suspend fun run(command: String, timeoutMs: Long): ShellResult =
         withContext(Dispatchers.IO) {
-            if (!localSocketClient.isPortListening()) {
-                authorizedAndVerified = false
+            if (!authorizedAndVerified && !localSocketClient.isPortListening()) {
                 return@withContext ShellResult.unavailable(command)
                     .copy(stderr = "ADB port $serial is closed. Turn on USB/Network Debugging in Developer Options.")
             }
             val res = localSocketClient.exec(command, timeoutMs)
             if (res.executed) {
                 authorizedAndVerified = true
+            } else if (res.failure != null) {
+                authorizedAndVerified = localSocketClient.isPortListening()
             }
             res
         }

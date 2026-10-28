@@ -1,22 +1,23 @@
-# ⚡ ATV Control v2.0
+# ⚡ atvtop — ATV Control v2.0
 
-> **High-Performance Task Manager, OEM Bloatware Remover & Unified Power Center for Android TV & Google TV**
+> **`htop` / `btop`-inspired Task Manager, PID Tree Inspector, OEM Bloatware Remover & Unified Power Center for Android TV & Google TV**
 
 ![Android TV](https://img.shields.io/badge/Platform-Android%20TV%20%7C%20Google%20TV-blue)
-![API](https://img.shields.io/badge/API-26%2B%20(Android%208.0%20--%2014)-green)
+![API](https://img.shields.io/badge/API-24%2B%20(Android%207.0%20--%2014)-green)
 ![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose%20TV-purple)
 ![License](https://img.shields.io/badge/License-Apache%202.0-orange)
 
-ATV Control is an award-winning utility engineered from the ground up for modern large-screen TVs (from 43" to 85"+). It solves the #1 complaint of Android TV and Google TV users: **background sluggishness, low available RAM, frozen launchers, and OEM pre-installed bloatware**.
+**atvtop** (**ATV Control**) is a high-performance utility engineered from the ground up for modern large-screen TVs (from 43" to 85"+). Inspired by Linux's `top`, `htop`, and `btop`, it solves the #1 complaint of Android TV and Google TV users: **background sluggishness, low available RAM, frozen launchers, and OEM pre-installed bloatware**.
 
 ---
 
 ## 🌟 Key Features
 
-### 1. ⚡ Precision Task Manager & PID Inspector
-- **1-Click "Kill All"**: Safely frees up hundreds of megabytes of RAM without breaking TV audio or video inputs.
-- **Deep PID Tree**: Click any running app to expand its active child process tree (`main`, `:sandboxed`, `:media`, etc.) with individual RSS memory usage and direct 1-click PID termination.
-- **Zero Background Resource Footprint**: When the user presses the `HOME` button or exits via `BACK`, the app permanently halts all accessibility hooks and frees 100% of its memory (0 MB RAM retained in background).
+### 1. ⚡ Precision Task Manager, Live RAM Sparkline & PID Inspector
+- **1-Click "Kill All" & "Kill All & Exit"**: Safely frees up hundreds of megabytes of RAM without breaking TV audio or video inputs, with an option to clean memory and return to the Home screen in a single click.
+- **Live Rolling RAM Sparkline Graph**: Real-time memory telemetry bar and 32-point rolling sparkline graph with color-coded load thresholds.
+- **Deep PID Tree (`htop`-style)**: Click any running app to expand its active child process tree (`main`, `:sandboxed`, `:media`, etc.) with individual RSS memory usage and direct 1-click PID termination (`kill -9`).
+- **Zero Background Resource Footprint**: Frees memory on exit while preserving Accessibility Service authorization across sessions.
 - **Accurate System vs. User App Badging**: Distinguishes pure framework services from user-installed streaming apps.
 
 ### 2. 📦 Intelligent OEM Bloatware Remover (Safe Debloater)

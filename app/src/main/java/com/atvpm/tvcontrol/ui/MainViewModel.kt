@@ -1,8 +1,11 @@
 package com.atvpm.tvcontrol.ui
 
 import android.app.Application
+import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.atvpm.tvcontrol.companion.CompanionWebServer
+import com.atvpm.tvcontrol.companion.QrCodeGenerator
 import com.atvpm.tvcontrol.core.AdbConnectionState
 import com.atvpm.tvcontrol.core.PrivilegeManager
 import com.atvpm.tvcontrol.domain.AppManagerController
@@ -25,9 +28,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-enum class MainScreenTab(val label: String) {
-    TASK_MANAGER("Task Manager"),
-    APP_MANAGER("Install / Remove Apps"),
+enum class MainScreenTab(val label: String, val icon: String) {
+    TASK_MANAGER("Tasks & RAM", "⚡"),
+    SMART_DEBLOATER("Smart Debloater", "📦"),
+    APK_FILES("Sideload APKs", "📥"),
+    PHONE_COMPANION("Phone Bridge", "📱"),
+    POWER_MENU("Power Center", "🔌"),
+    APP_MANAGER("App Manager", "📦");
 }
 
 enum class AppListFilter(val label: String) {
@@ -42,6 +49,11 @@ enum class AppManagerTab(val label: String) {
     CORE_SYSTEM_APPS("Core OS (Locked)"),
     DISABLED_OR_REMOVED("Disabled / Removed"),
     LOCAL_APK_FILES("Install APK Files"),
+}
+
+enum class AppSortOrder(val label: String) {
+    SIZE_DESC("Size ▼"),
+    NAME_ASC("Name A–Z"),
 }
 
 data class RunningAppsUiState(
@@ -67,6 +79,7 @@ data class RunningAppsUiState(
 data class AppManagerUiState(
     val loading: Boolean = false,
     val tab: AppManagerTab = AppManagerTab.USER_APPS,
+    val sortOrder: AppSortOrder = AppSortOrder.SIZE_DESC,
     val snapshot: AppManagerSnapshot = AppManagerSnapshot(),
     val visibleApps: List<ManagedAppEntry> = emptyList(),
     val selectedPackages: Set<String> = emptySet(),
@@ -106,10 +119,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // App Manager / Uninstaller / APK Installer state
     private val _appMgrLoading = MutableStateFlow(false)
     private val _appMgrTab = MutableStateFlow(AppManagerTab.USER_APPS)
+    private val _appMgrSort = MutableStateFlow(AppSortOrder.SIZE_DESC)
     private val _appMgrSnapshot = MutableStateFlow(AppManagerSnapshot())
     private val _appMgrSelected = MutableStateFlow<Set<String>>(emptySet())
     private val _appMgrBusyTarget = MutableStateFlow<String?>(null)
     private val _appMgrBatchWorking = MutableStateFlow(false)
+
+    // Companion Web Bridge & QR Code state
+    private val _companionUrl = MutableStateFlow<String?>(null)
+    val companionUrl: StateFlow<String?> = _companionUrl
+
+    private val _qrBitmap = MutableStateFlow<Bitmap?>(null)
+    val qrBitmap: StateFlow<Bitmap?> = _qrBitmap
+
+    val companionServer = CompanionWebServer(
+        context = appContext,
+        onApkUploaded = { file ->
+            viewModelScope.launch {
+                refreshAppManager()
+                _statusBanner.value = "Received APK from Phone: ${file.name}" to true
+                installApkFile(
+                    LocalApkFileEntry(
+                        filePath = file.absolutePath,
+                        fileName = file.name,
+                        appLabel = file.nameWithoutExtension,
+                        packageName = null,
+                        versionName = null,
+                        sizeMb = file.length() / (1024f * 1024f),
+                        icon = null,
+                    ),
+                )
+            }
+        },
+        onActionTriggered = { action ->
+            when (action) {
+                "kill-all" -> {
+                    killAllRunningApps()
+                    "Killed background apps"
+                }
+                "reload-launcher" -> {
+                    executeReboot(RebootMode.RELOAD_LAUNCHER)
+                    "Reloaded launcher"
+                }
+                "restart" -> {
+                    executeReboot(RebootMode.STANDARD_REBOOT)
+                    "Rebooting TV..."
+                }
+                "sleep" -> {
+                    executeReboot(RebootMode.GO_TO_SLEEP)
+                    "Standby triggered"
+                }
+                else -> "Action executed"
+            }
+        },
+        getSystemStatusJson = {
+            val mem = _memory.value
+            val free = mem?.availableRamMb ?: 0
+            val total = mem?.totalRamMb ?: 0
+            """{"freeRamMb":$free,"totalRamMb":$total,"device":"${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}","androidVersion":"${android.os.Build.VERSION.RELEASE}"}"""
+        },
+    )
 
     /**
      * Always opens directly to the Main Task Manager screen on launch.
@@ -195,6 +264,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val appManagerState: StateFlow<AppManagerUiState> = combine(
         _appMgrLoading,
         _appMgrTab,
+        _appMgrSort,
         _appMgrSnapshot,
         _appMgrSelected,
         _appMgrBusyTarget,
@@ -202,24 +272,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) { values ->
         val loading = values[0] as Boolean
         val tab = values[1] as AppManagerTab
-        val snap = values[2] as AppManagerSnapshot
+        val sort = values[2] as AppSortOrder
+        val snap = values[3] as AppManagerSnapshot
         @Suppress("UNCHECKED_CAST")
-        val selected = values[3] as Set<String>
-        val busy = values[4] as String?
-        val batch = values[5] as Boolean
+        val selected = values[4] as Set<String>
+        val busy = values[5] as String?
+        val batch = values[6] as Boolean
 
-        val visible = when (tab) {
+        val rawVisible = when (tab) {
             AppManagerTab.USER_APPS -> snap.userApps
             AppManagerTab.BLOATWARE_APPS -> snap.bloatwareApps
             AppManagerTab.CORE_SYSTEM_APPS -> snap.coreSystemApps
             AppManagerTab.DISABLED_OR_REMOVED -> snap.disabledOrRemovedApps
             AppManagerTab.LOCAL_APK_FILES -> emptyList()
         }
+        val visible = when (sort) {
+            AppSortOrder.SIZE_DESC -> rawVisible.sortedWith(
+                compareByDescending<ManagedAppEntry> { it.apkSizeMb }
+                    .thenBy { it.label.lowercase() },
+            )
+            AppSortOrder.NAME_ASC -> rawVisible.sortedBy { it.label.lowercase() }
+        }
         val validSelected = selected.intersect(visible.map { it.packageName }.toSet())
 
         AppManagerUiState(
             loading = loading,
             tab = tab,
+            sortOrder = sort,
             snapshot = snap,
             visibleApps = visible,
             selectedPackages = validSelected,
@@ -238,10 +317,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setScreenTab(tab: MainScreenTab) {
         _activeScreenTab.value = tab
-        if (tab == MainScreenTab.APP_MANAGER) {
-            refreshAppManager()
-        } else {
-            refreshRunningApps()
+        when (tab) {
+            MainScreenTab.SMART_DEBLOATER -> {
+                _appMgrTab.value = AppManagerTab.BLOATWARE_APPS
+                refreshAppManager()
+            }
+            MainScreenTab.APK_FILES -> {
+                _appMgrTab.value = AppManagerTab.LOCAL_APK_FILES
+                refreshAppManager()
+            }
+            MainScreenTab.APP_MANAGER -> {
+                refreshAppManager()
+            }
+            MainScreenTab.PHONE_COMPANION -> {
+                ensureCompanionRunning()
+            }
+            else -> {
+                refreshRunningApps()
+            }
+        }
+    }
+
+    fun ensureCompanionRunning() {
+        companionServer.start(viewModelScope)
+        val url = companionServer.serverUrl
+        _companionUrl.value = url
+        if (url != null) {
+            _qrBitmap.value = QrCodeGenerator.createQrBitmap(url, 512)
         }
     }
 
@@ -261,11 +363,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onHostResumed() {
         probeAndRefresh()
         startLiveRefreshLoop()
+        ensureCompanionRunning()
     }
 
     fun onHostStopped() {
         liveLoopJob?.cancel()
         liveLoopJob = null
+        companionServer.stop()
     }
 
     fun killAllAndExit(onExit: () -> Unit) {
@@ -470,6 +574,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _appMgrSelected.value = emptySet()
     }
 
+    fun toggleAppManagerSortOrder() {
+        _appMgrSort.value = when (_appMgrSort.value) {
+            AppSortOrder.SIZE_DESC -> AppSortOrder.NAME_ASC
+            AppSortOrder.NAME_ASC -> AppSortOrder.SIZE_DESC
+        }
+    }
+
     fun toggleAppManagerSelect(packageName: String) {
         val current = _appMgrSelected.value
         _appMgrSelected.value = if (packageName in current) {
@@ -517,6 +628,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _appMgrBusyTarget.value = app.packageName
             val res = appManagerController.batchRestoreOrEnableApps(listOf(app))
+            _statusBanner.value = res.message to res.success
+            _appMgrBusyTarget.value = null
+            refreshAppManager()
+            refreshRunningApps()
+        }
+    }
+
+    fun suspendApp(app: ManagedAppEntry) {
+        viewModelScope.launch {
+            _appMgrBusyTarget.value = app.packageName
+            val res = appManagerController.suspendApp(app.packageName)
+            _statusBanner.value = res.message to res.success
+            _appMgrBusyTarget.value = null
+            refreshAppManager()
+            refreshRunningApps()
+        }
+    }
+
+    fun unsuspendApp(app: ManagedAppEntry) {
+        viewModelScope.launch {
+            _appMgrBusyTarget.value = app.packageName
+            val res = appManagerController.unsuspendApp(app.packageName)
+            _statusBanner.value = res.message to res.success
+            _appMgrBusyTarget.value = null
+            refreshAppManager()
+            refreshRunningApps()
+        }
+    }
+
+    fun restrictBackground(app: ManagedAppEntry) {
+        viewModelScope.launch {
+            _appMgrBusyTarget.value = app.packageName
+            val res = appManagerController.restrictBackgroundAppOps(app.packageName)
             _statusBanner.value = res.message to res.success
             _appMgrBusyTarget.value = null
             refreshAppManager()

@@ -9,7 +9,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import androidx.core.content.FileProvider
 import com.atvpm.tvcontrol.core.PrivilegeManager
+import com.atvpm.tvcontrol.service.AccessibilityGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -29,6 +31,8 @@ data class ManagedAppEntry(
     val isInstalledForUser: Boolean,
     val isCriticalProtected: Boolean,
     val isBloatware: Boolean = false,
+    val safetyLevel: DebloatSafetyLevel = DebloatSafetyLevel.SAFE,
+    val oemBrand: String? = null,
 ) {
     val isRemovedOrDisabled: Boolean
         get() = !isEnabled || !isInstalledForUser
@@ -102,7 +106,9 @@ class AppManagerController(
             val hasLauncher = runCatching {
                 pm.getLaunchIntentForPackage(pkg) != null || pm.getLeanbackLaunchIntentForPackage(pkg) != null
             }.getOrDefault(false)
-            val isBloat = if (isCritical || !isSystem) false else isSafeBloatware(pkg, hasLauncher)
+            val debloatDef = DebloatDatabase.find(pkg)
+            val safetyLevel = DebloatDatabase.getSafetyLevel(pkg, isSystem, isCritical)
+            val isBloat = if (isCritical || !isSystem) false else (debloatDef != null || isSafeBloatware(pkg, hasLauncher))
 
             // Skip obscure internal overlays that have no APK size and aren't user-facing
             if (pkg.endsWith(".overlay") || pkg.startsWith("com.android.internal.")) continue
@@ -110,7 +116,7 @@ class AppManagerController(
             val meta = cache.getOrPut(pkg) {
                 val lbl = runCatching { pm.getApplicationLabel(info).toString() }
                     .getOrDefault(pkg)
-                    .ifBlank { pkg }
+                    .ifBlank { debloatDef?.humanName ?: pkg }
                 val icn = runCatching { pm.getApplicationIcon(info) }.getOrNull()
                 val ver = runCatching {
                     @Suppress("DEPRECATION")
@@ -120,7 +126,8 @@ class AppManagerController(
                     info.sourceDir?.let { File(it).length() } ?: 0L
                 }.getOrDefault(0L)
                 val sizeMb = sizeBytes / (1024f * 1024f)
-                val hint = ProcessController.KNOWN_BLOAT_ROLES[pkg] ?: when {
+                val hint = debloatDef?.let { "${it.oemBrand} • ${it.description}" }
+                    ?: ProcessController.KNOWN_BLOAT_ROLES[pkg] ?: when {
                     isCritical -> "Core Android TV OS component (Protected)"
                     isBloat -> "OEM Bloatware & Telemetry (Safe to Debloat)"
                     !isSystem -> "Installed User Application"
@@ -148,6 +155,8 @@ class AppManagerController(
                 isInstalledForUser = isInstalledForUser,
                 isCriticalProtected = isCritical || (!isBloat && isSystem),
                 isBloatware = isBloat,
+                safetyLevel = safetyLevel,
+                oemBrand = debloatDef?.oemBrand,
             )
 
             when {
@@ -308,7 +317,7 @@ class AppManagerController(
     }
 
     /**
-     * Batch uninstalls MULTIPLE User and/or System apps at once!
+     * Batch uninstalls MULTIPLE User and/or System apps at once in a single ADB shell session!
      */
     suspend fun batchUninstallApps(targets: List<ManagedAppEntry>): ActionResult = withContext(Dispatchers.IO) {
         val valid = targets.filter { !it.isCriticalProtected }
@@ -318,18 +327,21 @@ class AppManagerController(
 
         val runner = privilegeManager.active
         if (runner.isReady) {
-            var okCount = 0
-            for (app in valid) {
-                val cmd = if (app.isSystemApp) {
-                    "am force-stop ${app.packageName} 2>/dev/null; pm uninstall -k --user 0 ${app.packageName} 2>/dev/null || pm disable-user --user 0 ${app.packageName}"
-                } else {
-                    "am force-stop ${app.packageName} 2>/dev/null; pm uninstall ${app.packageName}"
-                }
-                val res = runner.run(cmd)
-                if (res.ok || res.stdout.contains("Success", ignoreCase = true) || res.stdout.contains("disabled", ignoreCase = true)) {
-                    okCount++
+            val batchCmd = buildString {
+                for (app in valid) {
+                    if (app.isSystemApp) {
+                        append("am force-stop ${app.packageName} 2>/dev/null; ")
+                        append("(pm uninstall -k --user 0 ${app.packageName} 2>/dev/null || pm disable-user --user 0 ${app.packageName} 2>/dev/null) && echo 'OK_PKG'; ")
+                    } else {
+                        append("am force-stop ${app.packageName} 2>/dev/null; ")
+                        append("pm uninstall ${app.packageName} 2>/dev/null && echo 'OK_PKG'; ")
+                    }
                 }
             }
+            val res = runner.run(batchCmd)
+            val okCount = res.stdout.lines().count {
+                it.contains("OK_PKG") || it.contains("Success", ignoreCase = true) || it.contains("disabled", ignoreCase = true)
+            }.coerceIn(if (res.executed) 1 else 0, valid.size)
             return@withContext ActionResult(
                 success = okCount > 0,
                 message = "Uninstalled / removed $okCount of ${valid.size} selected app(s)",
@@ -348,7 +360,7 @@ class AppManagerController(
     }
 
     /**
-     * Disables one or multiple apps (`pm disable-user --user 0 <pkg>`).
+     * Disables one or multiple apps (`pm disable-user --user 0 <pkg>`) in a single batched ADB session.
      */
     suspend fun batchDisableApps(targets: List<ManagedAppEntry>): ActionResult = withContext(Dispatchers.IO) {
         val valid = targets.filter { !it.isCriticalProtected }
@@ -358,13 +370,15 @@ class AppManagerController(
 
         val runner = privilegeManager.active
         if (runner.isReady) {
-            var okCount = 0
-            for (app in valid) {
-                val res = runner.run("am force-stop ${app.packageName} 2>/dev/null; pm disable-user --user 0 ${app.packageName}")
-                if (res.ok || res.stdout.contains("disabled", ignoreCase = true)) {
-                    okCount++
+            val batchCmd = buildString {
+                for (app in valid) {
+                    append("am force-stop ${app.packageName} 2>/dev/null; pm disable-user --user 0 ${app.packageName} 2>/dev/null && echo 'OK_DIS'; ")
                 }
             }
+            val res = runner.run(batchCmd)
+            val okCount = res.stdout.lines().count {
+                it.contains("OK_DIS") || it.contains("disabled", ignoreCase = true)
+            }.coerceIn(if (res.executed) 1 else 0, valid.size)
             return@withContext ActionResult(
                 success = okCount > 0,
                 message = "Disabled $okCount of ${valid.size} app(s) — won't run in background",
@@ -376,7 +390,7 @@ class AppManagerController(
     }
 
     /**
-     * Re-enables or restores one or multiple disabled / user-0 uninstalled system apps!
+     * Re-enables or restores one or multiple disabled / user-0 uninstalled system apps in a single batched ADB session!
      */
     suspend fun batchRestoreOrEnableApps(targets: List<ManagedAppEntry>): ActionResult = withContext(Dispatchers.IO) {
         if (targets.isEmpty()) {
@@ -385,17 +399,16 @@ class AppManagerController(
 
         val runner = privilegeManager.active
         if (runner.isReady) {
-            var okCount = 0
-            for (app in targets) {
-                val cmd = buildString {
+            val batchCmd = buildString {
+                for (app in targets) {
                     append("cmd package install-existing ${app.packageName} 2>/dev/null || pm install-existing ${app.packageName} 2>/dev/null || true; ")
-                    append("pm enable --user 0 ${app.packageName} 2>/dev/null || pm enable ${app.packageName}")
-                }
-                val res = runner.run(cmd)
-                if (res.ok || res.stdout.contains("enabled", ignoreCase = true) || res.stdout.contains("installed", ignoreCase = true)) {
-                    okCount++
+                    append("(pm enable --user 0 ${app.packageName} 2>/dev/null || pm enable ${app.packageName} 2>/dev/null) && echo 'OK_EN'; ")
                 }
             }
+            val res = runner.run(batchCmd)
+            val okCount = res.stdout.lines().count {
+                it.contains("OK_EN") || it.contains("enabled", ignoreCase = true) || it.contains("installed", ignoreCase = true)
+            }.coerceIn(if (res.executed) 1 else 0, targets.size)
             return@withContext ActionResult(
                 success = okCount > 0,
                 message = "Restored & enabled $okCount of ${targets.size} app(s)",
@@ -407,7 +420,49 @@ class AppManagerController(
     }
 
     /**
-     * Installs a local `.apk` file (`pm install -r "<path>"` via ADB, or native PackageInstaller).
+     * Freezes/suspends an app (`pm suspend <pkg>`), preventing all background wakeups and hiding it from the launcher.
+     */
+    suspend fun suspendApp(packageName: String): ActionResult = withContext(Dispatchers.IO) {
+        val runner = privilegeManager.active
+        if (runner.isReady) {
+            val res = runner.run("am force-stop $packageName 2>/dev/null; pm suspend $packageName")
+            if (res.ok || res.stdout.contains("Success", ignoreCase = true) || res.stdout.contains("suspended", ignoreCase = true)) {
+                return@withContext ActionResult(true, "Suspended $packageName (Frozen)")
+            }
+        }
+        ActionResult(false, "Requires ADB to suspend packages.")
+    }
+
+    /**
+     * Un-suspends a frozen app (`pm unsuspend <pkg>`).
+     */
+    suspend fun unsuspendApp(packageName: String): ActionResult = withContext(Dispatchers.IO) {
+        val runner = privilegeManager.active
+        if (runner.isReady) {
+            val res = runner.run("pm unsuspend $packageName")
+            if (res.ok || res.stdout.contains("Success", ignoreCase = true) || res.stdout.contains("unsuspended", ignoreCase = true)) {
+                return@withContext ActionResult(true, "Un-suspended $packageName")
+            }
+        }
+        ActionResult(false, "Requires ADB to unsuspend packages.")
+    }
+
+    /**
+     * Restricts background execution via AppOps (`cmd appops set <pkg> RUN_IN_BACKGROUND ignore`).
+     */
+    suspend fun restrictBackgroundAppOps(packageName: String): ActionResult = withContext(Dispatchers.IO) {
+        val runner = privilegeManager.active
+        if (runner.isReady) {
+            val res = runner.run("cmd appops set $packageName RUN_IN_BACKGROUND ignore && cmd appops set $packageName RUN_ANY_IN_BACKGROUND ignore")
+            if (res.ok) {
+                return@withContext ActionResult(true, "Restricted background execution for $packageName")
+            }
+        }
+        ActionResult(false, "Requires ADB to restrict AppOps.")
+    }
+
+    /**
+     * Installs a local `.apk` file (`pm install -r "<path>"` via ADB, or native PackageInstaller via FileProvider).
      */
     suspend fun installLocalApk(apk: LocalApkFileEntry): ActionResult = withContext(Dispatchers.IO) {
         val runner = privilegeManager.active
@@ -428,8 +483,14 @@ class AppManagerController(
         }
 
         val opened = runCatching {
+            AccessibilityGate.markLaunchingExternalActivity()
+            val file = File(apk.filePath)
+            val apkUri = runCatching {
+                FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", file)
+            }.getOrElse { Uri.fromFile(file) }
+
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(Uri.fromFile(File(apk.filePath)), "application/vnd.android.package-archive")
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             appContext.startActivity(intent)
@@ -455,6 +516,7 @@ class AppManagerController(
     }
 
     private fun launchNativeUninstall(packageName: String): Boolean = runCatching {
+        AccessibilityGate.markLaunchingExternalActivity()
         @Suppress("DEPRECATION")
         val intent = Intent(Intent.ACTION_UNINSTALL_PACKAGE, Uri.fromParts("package", packageName, null)).apply {
             putExtra(Intent.EXTRA_RETURN_RESULT, false)
@@ -464,6 +526,7 @@ class AppManagerController(
         true
     }.getOrElse {
         runCatching {
+            AccessibilityGate.markLaunchingExternalActivity()
             val fallback = Intent(Intent.ACTION_DELETE, Uri.fromParts("package", packageName, null)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }

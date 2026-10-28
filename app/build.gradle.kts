@@ -12,8 +12,8 @@ android {
         applicationId = "com.atvpm.tvcontrol"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.1"
+        versionCode = 4
+        versionName = "2.0"
 
         ndk {
             //noinspection ChromeOsAbiSupport
@@ -72,6 +72,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
 
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.zxing.core)
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 }

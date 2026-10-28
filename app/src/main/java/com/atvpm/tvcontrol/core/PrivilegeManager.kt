@@ -181,6 +181,7 @@ class PrivilegeManager(context: Context) {
     private fun startSettingsIntent(vararg actions: String): Boolean {
         for (action in actions) {
             val ok = runCatching {
+                AccessibilityGate.markLaunchingExternalActivity()
                 val intent = Intent(action).addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP,
